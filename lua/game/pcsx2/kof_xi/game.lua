@@ -7,6 +7,7 @@ local winprocess = require("winprocess")
 local window = require("window")
 local hk = require("hotkey")
 local Logger = require("game.pcsx2.kof_xi.logger")
+local MemLogger = require("game.pcsx2.kof_xi.memlogger")
 local colors = require("render.colors")
 local types = require("game.pcsx2.kof_xi.types")
 local boxtypes = require("game.pcsx2.kof_xi.boxtypes")
@@ -54,6 +55,7 @@ function KOF_XI:extraInit(noExport)
 			self.boxSlotConstructor, self.boxtypes)
 	end
 	self.logger = Logger:new()
+	self.memlogger = MemLogger:new()
 	self.players = ffiutil.ntypes("player", 2, 1)
 	self.teams = ffiutil.ntypes("team", 2, 1)
 	self.camera = ffi.new("camera")
@@ -150,6 +152,9 @@ function KOF_XI:checkInputs()
 	if hk.pressed(hk.VK_F9) then
 		self.logger:toggle()
 	end
+	if hk.pressed(hk.VK_F10) then
+		self.memlogger:toggle()
+	end
 end
 
 function KOF_XI:captureState()
@@ -162,6 +167,7 @@ function KOF_XI:captureState()
 		end
 	end
 	self.logger:logFrame(self)
+	self.memlogger:logFrame(self)
 end
 
 -- return -1 if player is facing left, or +1 if player is facing right
