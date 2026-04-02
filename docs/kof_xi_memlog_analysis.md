@@ -1,226 +1,266 @@
 # KOF XI Animation System — Memlog Analysis Report
 
-Analysis of `kof_xi_memlog_20260402_000502.ndjson` (1148 frames, ~17.7 seconds).
-Capture sampled at ~15 ms/frame (≈66 Hz), which is slightly faster than the game's
-60 fps tick rate — some game frames were double-sampled.
+Analysis of two captures:
+- **v1:** `kof_xi_memlog_20260402_000502.ndjson` (1148 frames, ~17.7s, 3 regions)
+- **v2:** `kof_xi_memlog_20260402_005007.ndjson` (1546 frames, ~23.9s, 6 regions)
 
 ---
 
 ## 1. Dataset Overview
+
+### v1 Capture (3 regions)
 
 | Metric | Value |
 |--------|-------|
 | Total frames captured | 1,148 |
 | Frame continuity gaps | 0 (perfect) |
 | Duration | 17.73 s |
-| Sample interval | avg 15.5 ms, min 6 ms, max 17 ms |
-| Unique base addresses | 3 (`0x0081FB84`, `0x0081EBC4`, `0x00820B44`) |
-| Unique positions | 222 |
-| Facing changes | 4 |
-| Hitbox-active transitions | 90 |
+| Unique base addresses | 3 (character tag-ins) |
 
-The three distinct base addresses correspond to three **different characters** being
-on point at different times:
+### v2 Capture (6 regions)
 
-| Frames | Base Address | Character (inferred) |
-|--------|-------------|---------------------|
-| 0–340 | `0x0081FB84` | Character A |
-| 341–819 | `0x0081EBC4` | Character B (tag-in at frame 341) |
-| 820–1147 | `0x00820B44` | Character C (tag-in at frame 820) |
+| Metric | Value |
+|--------|-------|
+| Total frames captured | 1,546 |
+| Frame continuity gaps | 0 (perfect) |
+| Duration | 23.9 s |
+| Sample interval | avg ~15 ms |
+| Unique base addresses | 1 (`0x0081EBC4`) |
+| Action transitions | 69 segments, 19 unique action IDs |
 
 ---
 
 ## 2. Key Discoveries
 
-### 2.1 Animation Data Pointer — `player+0x200h`
+### 2.1 Animation Frame Index — `player+0x2A4h` ★ NEW in v2
 
-**Location:** `anim_block_3[62:64]` → absolute offset `player+0x200h` (u16 LE).
+**Location:** `anim_block_5[25]` → absolute offset `player+0x2A4h` (u8).
 
-This 16-bit value acts as a **pointer or index into the animation data table**.
-It changes exactly at animation boundaries and exhibits small increments of +2
-between sequential animation phases within the same move.
+This is the **animation frame counter** — the primary indexing mechanism for the
+animation system. It increments by +1 every ~5 game frames (one animation frame
+tick) and resets to the action's base frame when a new action begins.
 
-**Evidence:**
-- 78 distinct transitions across 1,148 frames
-- Values cluster by character: Char A uses `0x4952`–`0x4BA2`, Char B uses
-  `0x1CD2`–`0x1EF5`, Char C uses `0x0052`–`0x02B0`
-- Sequential animation phases increment by 2 (e.g., `0x498A` → `0x498C` → `0x498E`)
-- Returns to a "home" value when idle (e.g., `0x4952` for Char A)
+**Evidence (v2, 1546 frames):**
+- 101 unique values observed (range 0–255)
+- 350 total changes: delta=+1 accounts for 270 of them (77%)
+- Each action ID uses a fixed sub-range of frame indices
+- Counter resets on every action transition
 
-**Interpretation:** This is likely an **offset into a per-character animation data
-bank** in PS2 RAM. The +2 increments between phases suggest each entry in the
-animation table is 2 bytes (possibly a pointer to frame data). The different value
-ranges per character confirm each has its own animation bank.
+**Animation frame ranges per action (v2 data):**
 
-### 2.2 Move / Action ID — `player+0x0ECh`
+| Action ID | Frame Range | Duration (game frames) | Loop? |
+|-----------|------------|----------------------|-------|
+| 0 (idle) | 0–9 | ~50 frames per cycle | Yes |
+| 1 (walk back) | 10–21 | ~61 frames | Yes |
+| 2 (walk fwd) | 22–29 | ~66 frames | Yes |
+| 4 (crouch/jump startup) | 58–60 | ~3–4 frames | No |
+| 5 (jumping) | 64–69 | ~45 frames | Partial |
+| 8 (attack startup) | 30–31 | ~4 frames | No |
+| 11 (attack active) | 32–39 | ~38 frames | Yes |
+| 23 (attack recovery) | 30–31 | ~2–3 frames | No |
+| 89 | 180–187 | 15 frames | — |
+| 160 (super) | 28–37 | 42 frames | — |
+| 194 (cinematic) | 30–195 | 169 frames | — |
 
-**Location:** `anim_block_2[95]` → absolute offset `player+0x0ECh` (u8).
+**Tick rate:** The most common spacing between +1 increments is 5 game frames,
+but this varies (2–11 frames observed). The animation system does not tick at a
+fixed rate relative to the game's 60fps — it appears to be driven by the animation
+data itself (variable frame durations per animation phase).
 
-This single byte is a **move or action identifier**. It has a perfect 1:1
-correspondence with the animation pointer at `+0x200h` — whenever the animation
-pointer changes, this byte changes to a new value.
+### 2.2 Action ID + Previous Action — `player+0x0ECh` / `player+0x0EEh`
 
-**Evidence:**
-- 26 unique values observed: `{0, 1, 2, 4, 5, 6, 24, 29, 30, 31, 83, 85, 89, 90, 94, 95, 99, 107, 110, 185, 189, 194, 204, 208, 218, 219}`
-- Value `0` = idle state
-- Values are small integers, NOT pointers
-- Changes synchronize exactly with animation pointer transitions
+**Location:** `anim_block_2[95]` / `anim_block_2[97]` → offsets `+0ECh` / `+0EEh`.
 
-**Partial action ID map (Char A, inferred from movement patterns):**
+v2 confirmed `+0ECh` as the current action ID and revealed `+0EEh` as the
+**previous action ID**. When action transitions from A→B:
+- `+0ECh` changes from A to B
+- `+0EEh` changes from (whatever it was) to A
 
-| Action ID | Animation Ptr | Behavior (observed) |
-|-----------|--------------|---------------------|
-| 0 | `0x4952` | Idle (standing) |
-| 1 | `0x4954` | Walk forward (short) |
-| 2 | `0x4956` | Walk backward |
-| 4 | `0x495A` | Walk animation phase 1 |
-| 5 | `0x495C` | Walk animation phase 2 |
-| 6 | `0x495E` | Walk animation phase 3 |
-| 29 | `0x498A` | Dash/run startup |
-| 30 | `0x498C` | Dash/run loop |
-| 31 | `0x498E` | Dash/run brake |
-| 89 | `0x4A02` | Pre-fight intro / taunt? |
-| 99 | `0x4A20` | Jump startup? |
-| 189 | `0x4B63` | Jump ascending |
-| 204 | `0x4B96` | Jump descending |
-| 208 | `0x4BA2` | Landing recovery |
+These two bytes have the **exact same set of 19 unique values** but are never
+equal at the same frame during an active transition.
 
-### 2.3 Animation Phase Property — `player+0x204h`
+**v2 Action ID map (single character, 19 actions observed):**
 
-**Location:** `anim_block_3[66]` → absolute offset `player+0x204h` (u8).
+| ID | Anim Frames | Inferred Meaning |
+|----|------------|-----------------|
+| 0 | 0–9 | Idle (neutral stand) |
+| 1 | 10–21 | Walk backward |
+| 2 | 22–29 | Walk forward |
+| 4 | 58–60 | Crouch / jump startup (3 frames) |
+| 5 | 64–69 | Airborne (jumping) |
+| 6 | 61 | Landing (1 frame) |
+| 8 | 30–31 | Attack startup |
+| 11 | 32–39 | Attack active / mid-combo |
+| 23 | 30–31 | Attack recovery |
+| 89 | 180–187 | Special move type A |
+| 90 | 196–200 | Special move type B |
+| 92 | 145–153 | Special move type C |
+| 93 | 219–223 | Special move type D |
+| 95 | 231–238 | EX/super startup |
+| 96 | 0–255 | Super active (uses full range) |
+| 98 | 1–12 | Special (multi-phase) |
+| 99 | 20–27 | Special (multi-phase) |
+| 160 | 28–37 | Super attack |
+| 194 | 30–195 | Cinematic / tag super |
 
-This byte remains **constant within each animation segment** and changes to a new
-value when the animation pointer changes. It appears to be a **property of the
-current animation phase** rather than a per-frame counter.
+### 2.3 Action Transition Signal — `player+0x0F2h`
 
-**Observed values and contexts:**
+**Location:** `anim_block_2[101:103]` → offset `+0F2h` (s16 LE).
 
-| Value | Context |
-|-------|---------|
-| 0 | Idle |
-| 1–7 | Walking / light movement |
-| 38, 97 | Attack animations (Char B) |
-| 53 | Intro animation |
-| 79, 178 | Jump animations |
-| 122, 132 | Jump/landing phases |
+Default value is `0xFFFF` (−1). Flashes to a different value for exactly **1 frame**
+at certain action transitions:
+- **Value 5** → appears during action 4 (crouch/jump startup)
+- **Value 0** → appears during actions 23, 89, 92, 95, 98 (attack recovery / specials)
 
-**Hypothesis:** This may encode the total duration or a frame-data offset for
-the current animation phase. More data (with controlled inputs) is needed to
-confirm.
+The companion byte at `+0F3h` is a sign extension (0xFF when +0F2h is 0xFF, 0x00
+otherwise). This is likely a **cancel/interrupt signal**.
 
-### 2.4 Character / Animation Bank Selector — `player+0x226h`
+### 2.4 Animation Data Pointer — `player+0x200h` (confirmed from v1)
 
-**Location:** `anim_block_3[64]` → absolute offset `player+0x226h` (u8).
+**Location:** `anim_block_3[62:64]` (u16 LE).
 
-Only 3 values observed, changing exclusively at character tag-in transitions:
+Still confirmed: changes exactly at animation boundaries, clusters by character,
++2 increments between sequential phases. In v2 (single character), 26 unique
+pointer values observed.
 
-| Value | Frames | Character |
-|-------|--------|-----------|
-| 28 | 0–340 | Character A |
-| 3 | 341–819 | Character B |
-| 51 | 820–1147 | Character C |
+### 2.5 Action Category Code — `player+0x204h` (refined from v1)
 
-This is likely a **character ID** or **animation bank index**. Cross-reference
-with `roster.lua` char IDs to confirm.
+**Location:** `anim_block_3[66]` (u8). 17 unique values in v2.
 
-### 2.5 Binary Battle State — `player+0x030h`
+v2 revealed this has a **clean mapping** from action IDs to category codes:
+- Actions 0–6 → categories 0–5 (basic movement)
+- Actions 8, 11, 23 → categories 32, 33, 35 (attack phases)
+- Special moves → categories 53, 73, 75, 122, etc.
 
-**Location:** `anim_block_1[16]` → absolute offset `player+0x030h` (u8).
+This is likely an **animation bank selector** within the character's animation table.
 
-Toggles between values `1` and `2`. Transitions to `2` during active move
-execution (attacks, dashes), returns to `1` during idle or recovery. Could be
-a **"in action" flag** or **animation-is-interruptible** state.
+### 2.6 Sprite/Hitbox Offsets — `player+0x2A8h` / `player+0x2AAh` ★ NEW in v2
 
-### 2.6 Hit/Block Stun Countdown — `player+0x03Dh`
+**Location:** `anim_block_5[29:31]` and `[31:33]` → offsets `+2A8h` / `+2AAh` (s16 LE).
 
-**Location:** `anim_block_1[29]` → absolute offset `player+0x03Dh` (u8).
+Small signed values that change per-animation-frame:
+- **+2A8h** (X offset): range −101 to −9. Changes at anim frame ticks.
+- **+2AAh** (Y offset): range −158 to −51. Changes primarily at action transitions.
 
-4 unique values: `{0, 1, 2, 3}`. During attack sequences, this counts down
-from 3 → 2 → 1 → 0 across sequential frames. Likely a **hit stun level** or
-**multi-hit phase counter**.
+These do NOT directly match hitbox positions but appear to be **sprite drawing
+offsets** — the displacement from the player origin to the sprite anchor point.
+Values are always negative, suggesting the sprite origin is above-left of the
+player position.
 
-### 2.7 Sub-frame Interpolation Phase — `player+0x04Ch`
+### 2.7 Animation Properties A/B — `player+0x2B2h` / `player+0x2B3h` ★ NEW in v2
 
-**Location:** `anim_block_1[44]` → absolute offset `player+0x04Ch` (u8).
+**Location:** `anim_block_5[39]` and `[40]` (u8 each).
 
-Cycles through `{0, 64, 128, 192}` during active animations. These are 4
-evenly spaced values in a byte: `0/4, 64/4, 128/4, 192/4` = `{0, 16, 32, 48}`
-quarter-values, suggesting this is a **sub-frame phase counter for animation
-interpolation** (4 ticks per animation frame).
+- **+2B2h**: 13 unique values (6–19). Varies by action and animation frame.
+- **+2B3h**: 12 unique values (7–18). Varies by action.
 
-### 2.8 Attack Timer — `player+0x06Ch`
+These change per-animation-frame and are action-dependent. Based on the value
+ranges and behavior:
+- **+2B2h** may encode a sprite or collision **width** in tile units
+- **+2B3h** may encode a sprite or collision **height** in tile units
 
-**Location:** `anim_block_1[108]` → absolute offset `player+0x06Ch` (u8).
+Sample values per action:
 
-Appears only during attack/special move sequences. Takes value `60` during
-attacks and `0` otherwise. May encode the **total active frames** of the
-current attack or a **hitstop duration**.
+| Action | +2B2h values | +2B3h values |
+|--------|-------------|-------------|
+| 0 (idle) | 8, 10 | 14, 15 |
+| 5 (jump) | 10, 11 | 9 |
+| 11 (attack) | 6, 8 | 9, 11, 16, 18 |
+| 160 (super) | 8, 10, 12, 13, 14 | 13 |
 
-### 2.9 Previous-frame Position Shadow — `player+0x03Ch`
+### 2.8 State Flags ★ NEW in v2
 
-**Location:** `anim_block_1[28:32]` → absolute offset `player+0x03Ch`.
+| Offset | Field Name | Values | Trigger |
+|--------|-----------|--------|---------|
+| `+2AEh` | `superStateFlag` | 0 or 16 | Set to 16 during action 160 (super attack), cleared on return to neutral |
+| `+2B0h` | `hitContactFlag` | 0 or 1 | Toggles for 1–2 frames during contact in actions 11 (attack active) and 194 |
+| `+2B4h` | `animPhaseToggle` | 0 or 1 | 124 changes total. Flips at animation phase boundaries |
+| `+2A5h` | `animPlayFlag` | 0 or 1 | Active during certain animation sequences |
 
-`[28:30]` as u16LE = X position, `[30:32]` as u16LE = Y position. These mirror
-`player.position` but stored deeper in the struct. Likely a **previous-frame
-position** used for interpolation or collision detection.
+### 2.9 Move Displacement / Gravity — `player+0x024h` / `player+0x054h` ★ NEW in v2
+
+**+024h** (s32 LE): Large displacement values, zero during idle. Active only during
+specific attack animations (actions 11 and 194). Values observed: 0, −27904
+(`0xFFFF9300`), −40448 (`0xFFFF6200`). Likely encodes move-specific displacement
+or momentum in fixed-point.
+
+**+054h** (s32 LE): Very small negative values (−7, −16, −17) that appear near the
+end of attack segments. Possibly **gravity accumulation** or **landing velocity**.
+
+### 2.10 Battle State / Stun (confirmed from v1)
+
+- **+030h** `battleState`: Toggles 1↔2. `2` = active action, `1` = idle/recovery.
+- **+034h** `battleStateAux`: Co-toggles with +030h. Values 0 / 0xDAAA.
+- **+03Dh** `stunCountdown`: Counts down during hit stun phases (values 4, 5 in v2).
+- **+03Ch/+03Eh** `prevPos`: Previous-frame position shadow (X and Y as u16 LE).
+
+### 2.11 Effect Data During Cinematics — `player+0x048h` / `player+0x04Dh`
+
+These bytes are **entirely static outside action 194** (cinematic super). During
+action 194:
+- `+048h` (u16 LE): 57 unique values, 63 rapid changes
+- `+04Dh` (u8): 84 unique values, 38 changes
+
+These likely encode **camera shake, VFX data, or screen coordinates** specific to
+the cinematic super animation.
 
 ---
 
-## 3. Correlation Matrix
+## 3. v2 Region Results Summary
 
-Events at the same frames confirm relationships between discovered fields:
-
-| Frame | Event | `+0ECh` | `+200h` | `+204h` | `+030h` | `+03Dh` |
-|-------|-------|---------|---------|---------|---------|---------|
-| 85 | Intro anim start | 0→89 | `4952`→`4A02` | 0→53 | — | — |
-| 103 | Return to idle | 89→0 | `4A02`→`4952` | 53→0 | — | — |
-| 104 | Walk forward | 0→1 | `4952`→`4954` | 0→1 | — | — |
-| 114 | Dash startup | 0→29 | `4952`→`498A` | 0→7 | — | — |
-| 341 | **TAG-IN** (Char B) | — | `49FA`→`1D76` | 126→38 | 1→2 | 0→3 |
-| 820 | **TAG-IN** (Char C) | — | `1D7A`→`00F6` | — | — | — |
+| Region | Offset | Dynamic Bytes | Key Findings |
+|--------|--------|--------------|--------------|
+| `anim_block_1` | `+020h` | 17/128 | Position shadow, battle state, displacement, effect data |
+| `anim_block_2` | `+08Dh` | 5/128 | Action ID, previous action, transition signals |
+| `anim_block_3` | `+1C2h` | 3/128 | Anim data pointer, action category, char bank |
+| `anim_block_4` | `+10Dh` | **0/128** | **ALL STATIC.** Character constants, no runtime data. |
+| `anim_block_5` | `+28Bh` | 9/128 | **Animation frame index**, sprite offsets, properties, flags |
+| `team_block` | team `+040h` | 2/128 | Only 2 bytes changed once. No input data found. |
 
 ---
 
-## 4. What's Missing — The Frame Timer
+## 4. What's Still Missing
 
-**No per-frame incrementing counter was found** in any of the three captured
-memory regions. The animation system must store its frame timer/countdown in one
-of the **uncaptured gaps** of the player struct.
+### Frame Timer
 
-**v2 logger now covers two of the highest-priority gaps:**
+**No per-frame incrementing counter was found** in any of the six captured regions.
+No single byte, u16, or u32 changes every frame. The `animFrameIndex` at +2A4h
+ticks every ~5 frames (variable), but is NOT a per-game-frame timer.
 
-| New Region | Offset Range | Size | Priority |
-|-----------|-------------|------|----------|
-| `anim_block_4` | `+10Dh` – `+18Ch` | 128 B | **HIGH** — covers most of Gap A |
-| `anim_block_5` | `+28Bh` – `+30Ah` | 128 B | **HIGH** — covers Gap C + early hitbox overlap |
-| `team_block` | team `+040h` – `+0BFh` | 128 B | **MEDIUM** — candidate input/game-state region |
+The frame timer must reside in one of the uncaptured gaps:
+- **Gap B2** (`+18Dh`–`+1C1h`, 53 bytes): Highest priority — between the static
+  block4 and block3.
+- **Gap D2** (`+242h`–`+28Ah`, 73 bytes): Between block3 and the newly-useful block5.
+- **Gaps E/F** (482 bytes total): Large tail section of the player struct.
 
-Remaining uncovered candidate for the frame timer:
+### Input Buffer
 
-| Gap | Range | Size | Notes |
-|-----|-------|------|-------|
-| Gap B2 | `+18Dh` – `+1BFh` | 51 B | Tail of old Gap A, not yet covered |
-| Gap D2 | `+30Bh` – `+39Dh` | 147 B | Post-hitbox, pre-hitboxesActive |
-| Gap E | `+39Fh` – `+4EFh` | 337 B | Large gap, likely gameplay state |
+The `team_block` (team `+040h`–`+0BFh`) yielded **almost nothing**: only 2 bytes
+changed once across 1546 frames. This region does NOT contain the input buffer.
+
+The input buffer is likely:
+1. **In the `playerExtra` struct** (team `+150h`, 32 bytes per character slot)
+2. **In a global input array** separate from player/team structs
+3. **In IOP-mapped memory** that the EE polls directly
+
+### anim_block_4 Dead Zone
+
+The entire 128 bytes at `+10Dh`–`+18Ch` are **completely static**. This region
+likely stores per-character constants (move frame data tables, damage values, etc.)
+loaded once when the character initializes. It should be replaced with a more
+useful capture target in v3.
 
 ---
 
-## 5. Input State — Strategy
+## 5. Input State — Strategy (unchanged)
 
-KOF XI on PCSX2 does not have a known, stable input buffer address. The game
-reads PS2 pad data via the IOP subsystem and copies it into its own RAM.
-
-**Current approach (v2):** The logger captures `team_block` (team struct
-`+040h`, 128 bytes) which is a large unexplored region in the per-player team
-struct. This is a strong candidate for containing processed input state,
-since fighting games commonly store per-player input near team/player data.
+KOF XI on PCSX2 does not have a known, stable input buffer address.
 
 **PS2 Pad Data Format (for reference):**
 ```
 Byte 0 (active-LOW): [Select, L3, R3, Start, Up, Right, Down, Left]
 Byte 1 (active-LOW): [L2, R2, L1, R1, Triangle, Circle, Cross, Square]
 ```
-Buttons active-LOW means 0 = pressed, 1 = released.
 
 **User's button mapping:**
 | PS2 Button | KOF Button | Pad Byte 1 Bit |
@@ -231,33 +271,26 @@ Buttons active-LOW means 0 = pressed, 1 = released.
 | Circle (○) | D (HK) | bit 2 |
 | R1 | E (tag) | bit 4 |
 
-**To locate the input buffer:** Run the v2 logger and perform:
-1. Hold a single button for several seconds, then release
-2. Repeat for each button individually
-3. Tap each direction individually
-
-Then scan `team_block` and all `anim_block_*` regions for bytes that flip
-synchronously with button presses. Active-LOW 2-byte pad words (`0xFF7F` with
-one bit cleared) are the signature to look for.
+**To locate the input buffer**, a targeted PCSX2 Cheat Engine scan while holding
+a button may be more effective than the blind region capture approach.
 
 ---
 
 ## 6. Next Steps
 
-1. **Run v2 logger** with the new capture regions and perform controlled actions
-   to find the frame timer in blocks 4/5 and input state in team_block.
+### v3 Logger Changes (recommended)
+1. **Replace `anim_block_4`** (dead zone) with **Gap B2** (`+18Dh`, 53 bytes) —
+   highest priority for finding the frame timer.
+2. **Add Gap D2** (`+242h`, 73 bytes) if space permits — second timer candidate.
+3. Consider a **global address scan region** to hunt for the input buffer outside
+   the player struct.
 
-2. **Controlled input test** — hold each button one at a time for 2-3 seconds
-   to create clear on/off signatures in the raw data.
-
-3. **Controlled animation test** — perform single known moves (stand A, crouch B,
-   236A, etc.) with pauses between them to isolate animation segments.
-
-4. **Two-player capture** — set `memlogger.targetPlayer = 2` to capture P2 data
-   and correlate team_block contents between players.
-
-5. **Correlate `+0x226h` with roster.lua** — verify the character bank selector
-   against known char IDs.
-
-6. **Longer capture with varied gameplay** — blocking, getting hit, throws, supers,
-   and round transitions to fill out the action ID table.
+### Analysis Tasks
+1. **Controlled animation test** — perform isolated single moves with pauses to
+   build a complete action ID → move name mapping.
+2. **Cross-reference `+226h`** character bank selector with `roster.lua` char IDs.
+3. **Two-player capture** — set `memlogger.targetPlayer = 2` to compare structures.
+4. **Longer varied capture** — blocking, getting hit, throws, round transitions
+   to discover defensive state fields.
+5. **Cheat Engine parallel scan** — scan PCSX2 RAM for a u8 or u16 that increments
+   by 1 every frame to definitively locate the frame timer.

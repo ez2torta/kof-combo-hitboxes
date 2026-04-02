@@ -12,12 +12,39 @@ All offsets are relative to the start of the `player` struct in PS2 emulated RAM
 | `+008h` | 16 | — | `padding01` | Unknown. |
 | `+018h` | 8 | `fixedPair` | `velocity` | 16.16 fixed-point. +X = forward (scale by facing). +Y = up. |
 | `+020h` | 108 | — | `padding02` | **anim_block_1** captures 128 bytes starting here (overlaps into padding03). |
+| `+024h` | 4 | `s32 LE` | `moveDisplacement` | Large negative values during special attacks (actions 11, 194). Zero during idle. |
+| `+030h` | 1 | `u8` | `battleState` | Toggles 1↔2. `2` during active actions, `1` during idle/recovery. |
+| `+034h` | 2 | `u16 LE` | `battleStateAux` | Co-toggles with `battleState`. Values `0` or `0xDAAAh`. |
+| `+03Ch` | 2 | `u16 LE` | `prevPosX` | Previous-frame X position (shadow). |
+| `+03Dh` | 1 | `u8` | `stunCountdown` | Counts down 5→4→…→0 during hit stun phases. |
+| `+03Eh` | 2 | `u16 LE` | `prevPosY` | Previous-frame Y position (shadow). |
+| `+03Fh` | 1 | `u8` | `posPhase` | Values 1 or 2. Lags behind `battleState`. |
+| `+048h` | 2 | `u16 LE` | `effectDataA` | High-cardinality; changes rapidly only during action 194 (cinematic super). |
+| `+04Dh` | 1 | `u8` | `effectDataB` | 84 unique values; changes during action 194 animations. |
+| `+054h` | 4 | `s32 LE` | `gravityOrVelocity` | Small negative values (−7, −16, −17) near attack ends. Possible vertical velocity. |
 | `+08Ch` | 1 | `byte` | `facing` | `0x00` = left, `0x02` = right. |
-| `+08Dh` | 307 | — | `padding03` | **anim_block_2** captures 128 bytes starting here. |
+| `+08Dh` | 128 | — | `padding03` | **anim_block_2** captures 128 bytes starting here. |
+| `+0ECh` | 1 | `u8` | `actionID` | Current move/action ID. See Action ID table below. |
+| `+0EEh` | 1 | `u8` | `prevActionID` | Previous action ID. Stores last action when a new one starts. |
+| `+0F2h` | 2 | `s16 LE` | `actionSignal` | Default `0xFFFF`. Flashes 0 or 5 for 1 frame at action transitions. |
+| `+0F6h` | 1 | `u8` | `superSignal` | Transition signal. Only fires during action 194. Values 0 or 2. |
+| `+10Dh` | 128 | — | `padding03b` | **anim_block_4** captures 128 bytes here. **ALL STATIC** — no bytes change during gameplay. |
 | `+1C0h` | 2 | `uword` | `unknown02` | Unknown status word. |
 | `+1C2h` | 166 | — | `padding04` | **anim_block_3** captures 128 bytes starting here. |
+| `+200h` | 2 | `u16 LE` | `animDataPtr` | Animation data table pointer/index. Banks by character. +2 per phase. |
+| `+204h` | 1 | `u8` | `actionCategory` | Maps action IDs to animation categories. 1:1 with actions. |
+| `+226h` | 1 | `u8` | `charBankSelector` | Character/animation bank index. Changes only at tag-ins. |
 | `+268h` | 35+ | `playerFlags` | `flags` | Status flags. `+268h+01Bh` = `collisionActive` (bit 4). |
-| `+28Bh` | 137 | — | `padding05` | **NOT CAPTURED** by current logger. |
+| `+28Bh` | 128 | — | `padding05` | **anim_block_5** captures 128 bytes starting here. |
+| `+2A4h` | 1 | `u8` | `animFrameIndex` | **Animation frame counter.** Increments +1 per anim frame (~5 game frames). Resets on action change. |
+| `+2A5h` | 1 | `u8` | `animPlayFlag` | 0 or 1. Related to animation playback state. |
+| `+2A8h` | 2 | `s16 LE` | `spriteOffsetX` | Sprite/hitbox offset X. Range −101 to −9. Changes per anim frame. |
+| `+2AAh` | 2 | `s16 LE` | `spriteOffsetY` | Sprite/hitbox offset Y. Range −158 to −51. Changes at action transitions. |
+| `+2AEh` | 1 | `u8` | `superStateFlag` | 0 or 16. Set to 16 during action 160 (super attack). |
+| `+2B0h` | 1 | `u8` | `hitContactFlag` | 0 or 1. Toggles during contact actions (11, 194). |
+| `+2B2h` | 1 | `u8` | `animPropertyA` | Values 6–19 (per-action). Possibly sprite width unit. |
+| `+2B3h` | 1 | `u8` | `animPropertyB` | Values 7–18 (per-action). Possibly sprite height unit. |
+| `+2B4h` | 1 | `u8` | `animPhaseToggle` | 0 or 1. Flips at animation frame boundaries. |
 | `+314h` | 70 | `hitbox[7]` | `hitboxes` | 7 hitbox slots, 10 bytes each. |
 | `+35Ah` | 68 | — | `padding06` | **NOT CAPTURED** by current logger. |
 | `+39Eh` | 1 | `byte` | `hitboxesActive` | Bitmask for slots 0–5. |
@@ -41,6 +68,53 @@ Total known struct span: at least `0x584` (1412) bytes.
 | `+9h` | 1 | — | Unknown padding |
 
 Slots: 0 = attackBox, 1–3 = vulnBox 1–3, 4 = grabBox, 5 = hb6, 6 = collisionBox.
+
+## Action ID Table (Observed)
+
+Compiled across v1 + v2 captures. Action IDs are per-action, **not** per-character.
+
+| Action ID | Category Code (+204h) | Behavior (inferred) |
+|-----------|----------------------|---------------------|
+| 0 | 0 | Idle (standing neutral) |
+| 1 | 1 | Walk backward |
+| 2 | 2 | Walk forward |
+| 4 | 4 | Crouch / jump startup |
+| 5 | 3 | Jumping (airborne) |
+| 6 | 5 | Landing recovery |
+| 8 | 32 | Attack startup (grounded) |
+| 11 | 33 | Attack active / mid-combo |
+| 23 | 35 | Attack recovery |
+| 89 | 53 | Special move A |
+| 90 | 73 | Special move B |
+| 92 | 53 | Special move C |
+| 93 | 75 | Special move D |
+| 95 | 53/122 | EX/super startup |
+| 96 | 73/122 | Super active |
+| 98 | 53/122/255 | Special move (multi-phase) |
+| 99 | 75/122 | Special move (multi-phase) |
+| 160 | 13/122 | Super attack |
+| 194 | 57/120 | Cinematic / tag super |
+
+### Animation Frame Ranges per Action
+
+Each action uses a specific sub-range of the `animFrameIndex` (+2A4h):
+
+| Action | Frame Range | Loop? |
+|--------|------------|-------|
+| 0 (idle) | 0–9 | Yes (cycles) |
+| 1 (walk back) | 10–21 | Yes |
+| 2 (walk fwd) | 22–29 | Yes |
+| 4 (crouch/jump) | 58–60 | No |
+| 5 (jumping) | 64–69 | Partial |
+| 8 (atk startup) | 30–31 | No |
+| 11 (atk active) | 32–39 | Yes |
+| 23 (atk recov) | 30–31 | No |
+| 89 (special A) | 180–187 | — |
+| 90 (special B) | 196–200 | — |
+| 92 (special C) | 145–153 | — |
+| 93 (special D) | 219–223 | — |
+| 95 (super start) | 231–238 | — |
+| 160 (super atk) | 28–37 | — |
 
 ## Team Struct
 
@@ -127,10 +201,17 @@ The `memlogger.lua` (F10 toggle) captures six 128-byte raw regions per frame:
 
 | Gap | Range | Size | Notes |
 |-----|-------|------|-------|
-| Gap B2 | `+18Dh` – `+1BFh` | 51 bytes | Between block4 end and unknown02 |
-| Gap D2 | `+30Bh` – `+39Dh` | 147 bytes | Between block5 end and hitboxesActive |
-| Gap E | `+39Fh` – `+4EFh` | 337 bytes | Between hitboxesActive and unknown03 |
-| Gap F | `+4F1h` – `+581h` | 145 bytes | Between unknown03 and stunTimer |
+| Pre-block | `+000h` – `+01Fh` | 32 bytes | Position, velocity (already known) |
+| Gap B2 | `+18Dh` – `+1C1h` | 53 bytes | Between block4 end and unknown02. **Frame timer candidate.** |
+| Gap D2 | `+242h` – `+28Ah` | 73 bytes | Between block3 end and block5 start. |
+| Gap post-b5 | `+30Bh` – `+313h` | 9 bytes | Between block5 end and hitboxes start. |
+| Gap D3 | `+35Ah` – `+39Dh` | 68 bytes | Post-hitboxes, pre-hitboxesActive. |
+| Gap E | `+39Fh` – `+4EFh` | 337 bytes | Large gap, likely gameplay state. |
+| Gap F | `+4F1h` – `+581h` | 145 bytes | Between unknown03 and stunTimer. |
+
+**Note:** `anim_block_4` (`+10Dh`–`+18Ch`) is **entirely static** — 0 bytes changed across 1546 frames.
+This region likely contains character constants (move properties, hitbox definitions) loaded once.
+It can be deprioritized or replaced in future captures.
 
 ## Coordinate System
 
