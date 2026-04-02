@@ -12,8 +12,8 @@ DEFINES=-D UNICODE -D _UNICODE
 CFLAGS=-std=c99 -g -mwindows -mconsole $(DEFINES) $(INCLUDES)
 LDFLAGS=$(LIBS) -ld3d9 -lluajit
 EXE_NAME=kof-hitboxes.exe
-OBJECTS=luautil.o directx.o
-HEADERS=$(subst .o,.h,$(OBJECTS))
+OBJECTS=luautil.o directx.o manifest.o
+HEADERS=$(subst .o,.h,$(filter-out manifest.o,$(OBJECTS)))
 MAIN_AND_OBJECTS=main.o $(OBJECTS)
 VPATH=src lib lib/luajit
 
@@ -34,6 +34,9 @@ main.o: main.c $(HEADERS)
 
 directx.o luautil.o: %.o: %.c
 	$(CC) $(CFLAGS) -c $^
+
+manifest.o: src/kof-hitboxes.rc src/kof-hitboxes.manifest
+	windres -i src/kof-hitboxes.rc -o $@ --include-dir src -O coff
 
 clean:
 ifeq ($(USING_BATCH_FILE),true)

@@ -1,0 +1,4 @@
+// Resource script to embed the UAC manifest into the executable.
+// ID 1 = application manifest (required by Windows).
+#define RT_MANIFEST 24
+1 RT_MANIFEST "kof-hitboxes.manifest"

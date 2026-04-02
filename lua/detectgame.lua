@@ -17,9 +17,16 @@ local function checkClassName(hwnd, params)
 	local parentPID, parentThread = window.getParentProcessID(hwnd)
 	local handle = winprocess.open(parentPID)
 	local imageName = window.getProcessImageName(handle)
-	local target = params.targetProcessName
-	local result = luautil.stringEndsWith(imageName, target, true)
-	if not result then
+	local targets = params.targetProcessName
+	if type(targets) == "string" then targets = { targets } end
+	local matched = false
+	for _, target in ipairs(targets) do
+		if luautil.stringEndsWith(imageName, target, true) then
+			matched = true
+			break
+		end
+	end
+	if not matched then
 		winprocess.close(handle)
 		return nil
 	else
@@ -139,9 +146,9 @@ local PS2Game = GameTemplate:new({
 	postprocess = findGameWindowByParentPID,
 	-- PCSX2's GAME DISPLAY window title will contain this line
 	-- (this is the window we really want, not the console window)
-	gameWindowTitles = { "GSdx", "ZeroGS" },
+	gameWindowTitles = { "GSdx", "ZeroGS", "Frame:" },
 	rawTitle = true,
-	targetProcessName = "pcsx2.exe",
+	targetProcessName = { "pcsx2.exe", "pcsx2-rr.exe" },
 })
 
 -- games are detected and prioritized in the order listed here;
@@ -253,6 +260,31 @@ local detectedGames = {
 		},
 	}),
 }
+
+-- Prints every visible window title + owning process name to the console.
+-- Useful when game detection fails and you need to know the exact titles
+-- that PCSX2 (or any other emulator) is reporting.
+function detectgame.debugWindows()
+	print("=== Window debug list (title | process) ===")
+	local pidBuffer = winutil.dwordBufType(0)
+	local function EnumWindowsProc(hwnd, lParam)
+		local title = window.getWindowTitle(hwnd)
+		if title and #title > 0 then
+			local parentPID = window.getParentProcessID(hwnd, pidBuffer)
+			local imageName = "(access denied)"
+			local ok, handle = pcall(winprocess.open, winprocess, parentPID)
+			if ok and handle ~= nil then
+				imageName = window.getProcessImageName(handle) or "(unknown)"
+				winprocess.close(handle)
+			end
+			print(string.format("  [%s]  ->  %s", title, imageName))
+		end
+		return true
+	end
+	local successful = C.EnumWindows(EnumWindowsProc, 0)
+	winerror.checkNotZero(successful)
+	print("===========================================")
+end
 
 function detectgame.findSupportedGame(hInstance)
 	local detectedGame = nil

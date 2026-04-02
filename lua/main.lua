@@ -55,6 +55,10 @@ function main(hInstance, CLibs)
 		return mainLoop(game)
 	else
 		print("Failed to detect a supported game running.")
+		print("Listing all open windows to help diagnose the issue...")
+		print()
+		detectgame.debugWindows()
+		print()
 		print("Press any key to exit.")
 		while C._kbhit() == 0 do C.Sleep(5) end
 	end
