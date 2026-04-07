@@ -242,11 +242,26 @@ end
 -- has a "data pointer" at entry+10h.  The player struct (position, hitboxes,
 -- etc.) lives at (data_ptr - 0x614) in RAM.
 --
--- Access path:  team.entries[team.point] -> entry+10h -> data-0x614 -> player
+-- IMPORTANT: team.point is a teamPosition value (0/1/2), NOT an index into
+-- entries[].  After a tag, entries[] stays in character-selection order but
+-- playerExtra.teamPosition values rotate.  We must search for the entry
+-- whose playerExtra.teamPosition == team.point.
+--
+-- Access path:  entries[e] (where p[e].teamPosition==point) -> entry+10h
+--               -> data-0x614 -> player
 function KOF_XI_AW:capturePlayerState(which)
 	local team, player = self.teams[which], self.players[which]
 	self:read(self.teamPtrs[which], team)
-	local entryPtr = team.entries[team.point]
+	-- Find the entry whose teamPosition matches team.point
+	local entryIdx = nil
+	for e = 0, 2 do
+		if team.p[e].teamPosition == team.point then
+			entryIdx = e
+			break
+		end
+	end
+	if not entryIdx then return end
+	local entryPtr = team.entries[entryIdx]
 	local entryOff = self:sh4ToRAMOffset(entryPtr)
 	if not entryOff then return end
 	local dataPtr = self:readPtr(entryOff + 0x10)
@@ -330,9 +345,118 @@ function KOF_XI_AW:debugDump()
 		print("Camera READ FAILED: " .. tostring(camErr))
 	end
 
-	-- 3. Per-player chain
+	-- Helper: resolve an entry pointer to a player struct and dump it
+	local tmpPlayer = ffi.new("player")
+	local rawBuf = ffi.new("uint8_t[16]")
+	local function dumpEntry(label, entryPtr)
+		local entryOff = self:sh4ToRAMOffset(entryPtr)
+		if not entryOff then
+			print(string.format("    %s: entryPtr=0x%08X -> nil offset",
+				label, entryPtr))
+			return
+		end
+		local ok1, dataPtr = pcall(self.readPtr, self, entryOff + 0x10)
+		if not ok1 then
+			print(string.format("    %s: readPtr(0x%X+0x10) FAILED: %s",
+				label, entryOff, tostring(dataPtr)))
+			return
+		end
+		local dataOff = self:sh4ToRAMOffset(dataPtr)
+		if not dataOff then
+			print(string.format(
+				"    %s: dataPtr=0x%08X -> nil offset", label, dataPtr))
+			return
+		end
+		local playerOff = dataOff - 0x614
+		if playerOff < 0 or playerOff >= Flycast_Common.SH4_RAM_SIZE then
+			print(string.format("    %s: playerOff=0x%X OUT OF RANGE",
+				label, playerOff))
+			return
+		end
+		local ok2, pErr = pcall(self.read, self, playerOff, tmpPlayer)
+		if not ok2 then
+			print(string.format("    %s: player READ FAILED: %s",
+				label, tostring(pErr)))
+			return
+		end
+		-- Read raw bytes around the facing offset for alignment diagnosis
+		pcall(self.read, self, playerOff + 0x088, rawBuf)
+		local hexStr = {}
+		for b = 0, 15 do
+			hexStr[b + 1] = string.format("%02X", rawBuf[b])
+		end
+		print(string.format(
+			"    %s: entryOff=0x%X dataPtr=0x%08X playerOff=0x%X",
+			label, entryOff, dataPtr, playerOff))
+		print(string.format(
+			"      pos=(%d,%d) facing=0x%02X hbActive=0x%02X float=%.3f",
+			tmpPlayer.position.x, tmpPlayer.position.y,
+			tmpPlayer.facing, tmpPlayer.hitboxesActive, tmpPlayer.unknown01))
+		print(string.format(
+			"      raw[+088h..+097h]: %s  (facing byte at [+08Ch] = [4])",
+			table.concat(hexStr, " ")))
+		-- Show active hitboxes
+		local bs = tmpPlayer.hitboxesActive
+		if bs ~= 0 then
+			for i = 0, 6 do
+				if bit.band(bs, 1) ~= 0 then
+					local hb = tmpPlayer.hitboxes[i]
+					print(string.format(
+						"      hb[%d]: pos=(%d,%d) id=0x%02X w=%d h=%d",
+						i, hb.position.x, hb.position.y,
+						hb.boxID, hb.width, hb.height))
+				end
+				bs = bit.rshift(bs, 1)
+				if bs == 0 then break end
+			end
+		end
+	end
+
+	-- Helper: dump a projectile entry (try both with and without -0x614)
+	local tmpProj = ffi.new("projectile")
+	local function dumpProjectile(label, sh4ptr)
+		local entryOff = self:sh4ToRAMOffset(sh4ptr)
+		if not entryOff then
+			print(string.format("    %s: ptr=0x%08X -> nil offset",
+				label, sh4ptr))
+			return
+		end
+		local ok1, innerPtr = pcall(self.readPtr, self, entryOff + 0x10)
+		if not ok1 then
+			print(string.format("    %s: readPtr FAILED: %s",
+				label, tostring(innerPtr)))
+			return
+		end
+		local innerOff = self:sh4ToRAMOffset(innerPtr)
+		if not innerOff then
+			print(string.format("    %s: innerPtr=0x%08X -> nil offset",
+				label, innerPtr))
+			return
+		end
+		-- Try reading at innerOff (current behavior, no subtraction)
+		local ok2a = pcall(self.read, self, innerOff, tmpProj)
+		local posA, hbA = "(fail)", "?"
+		if ok2a then
+			posA = string.format("(%d,%d)", tmpProj.position.x, tmpProj.position.y)
+			hbA = string.format("0x%02X", tmpProj.hitboxesActive)
+		end
+		-- Try reading at innerOff - 0x614 (like players)
+		local altOff = innerOff - 0x614
+		local ok2b = (altOff >= 0) and pcall(self.read, self, altOff, tmpProj)
+		local posB, hbB = "(fail)", "?"
+		if ok2b then
+			posB = string.format("(%d,%d)", tmpProj.position.x, tmpProj.position.y)
+			hbB = string.format("0x%02X", tmpProj.hitboxesActive)
+		end
+		print(string.format(
+			"    %s: innerPtr=0x%08X  @innerOff: pos=%s hb=%s"
+			.. "  @innerOff-0x614: pos=%s hb=%s",
+			label, innerPtr, posA, hbA, posB, hbB))
+	end
+
+	-- 3. Per-team diagnostics
 	for side = 1, 2 do
-		print(string.format("--- Player %d (teamPtr=0x%X) ---",
+		print(string.format("--- Side %d (teamPtr=0x%X) ---",
 			side, self.teamPtrs[side]))
 		local team = self.teams[side]
 		local teamOk, teamErr = pcall(self.read, self,
@@ -341,89 +465,41 @@ function KOF_XI_AW:debugDump()
 			print("  team READ FAILED: " .. tostring(teamErr))
 			goto continue
 		end
-		local point = team.point
-		print(string.format("  team.point=%d  team.super=0x%X",
-			point, team.super))
-
-		-- Show all 3 entry pointers
-		for e = 0, 2 do
-			print(string.format("  entries[%d]=0x%08X", e, team.entries[e]))
-		end
-
-		local entryPtr = team.entries[point]
-		local entryOff = self:sh4ToRAMOffset(entryPtr)
-		if not entryOff then
-			print(string.format(
-				"  ** entryPtr 0x%08X -> sh4ToRAMOffset returned nil **",
-				entryPtr))
-			goto continue
-		end
-		print(string.format("  entryOff=0x%X (RAM offset)", entryOff))
-
-		local dataPtrOk, dataPtr = pcall(self.readPtr, self, entryOff + 0x10)
-		if not dataPtrOk then
-			print("  readPtr(entry+0x10) FAILED: " .. tostring(dataPtr))
-			goto continue
-		end
-		local dataOff = self:sh4ToRAMOffset(dataPtr)
-		if not dataOff then
-			print(string.format(
-				"  ** dataPtr 0x%08X -> sh4ToRAMOffset returned nil **",
-				dataPtr))
-			goto continue
-		end
-
-		local playerOff = dataOff - 0x614
 		print(string.format(
-			"  dataPtr=0x%08X  dataOff=0x%X  playerOff=0x%X",
-			dataPtr, dataOff, playerOff))
+			"  point=%d leader=%d combo=%d super=0x%X skill=0x%X",
+			team.point, team.leader, team.comboCounter,
+			team.super, team.skillStock))
 
-		if playerOff < 0 or playerOff >= Flycast_Common.SH4_RAM_SIZE then
-			print("  ** playerOff out of range **")
-			goto continue
-		end
-
-		local player = self.players[side]
-		local pOk, pErr = pcall(self.read, self, playerOff, player)
-		if not pOk then
-			print("  player READ FAILED: " .. tostring(pErr))
-			goto continue
-		end
-
-		local px, py = player.position.x, player.position.y
-		local facing = player.facing
-		local hbAct = player.hitboxesActive
-		local scaleF = player.unknown01
-		print(string.format(
-			"  pos=(%d,%d)  facing=0x%02X  hitboxesActive=0x%02X  float=%.3f",
-			px, py, facing, hbAct, scaleF))
-
-		-- Show playerExtra for this side
+		-- Dump ALL 3 entries (not just the point character)
 		for e = 0, 2 do
+			local isPoint = (e == team.point) and " [POINT]" or ""
 			local pe = team.p[e]
 			print(string.format(
-				"  extra[%d]: charID=%d  health=%d  teamPos=%d",
-				e, pe.charID, pe.health, pe.teamPosition))
+				"  slot[%d]%s: entry=0x%08X  charID=%d hp=%d teamPos=%d",
+				e, isPoint, team.entries[e], pe.charID, pe.health,
+				pe.teamPosition))
+			if team.entries[e] ~= 0 then
+				dumpEntry(string.format("slot[%d]", e), team.entries[e])
+			end
 		end
 
-		-- World-to-screen
-		local sx, sy = self:worldToScreen(px, py)
-		print(string.format("  screen=(%d,%d)", sx, sy))
-
-		-- Hitbox details
-		if hbAct ~= 0 then
-			local bs = hbAct
-			for i = 0, 6 do
-				if bit.band(bs, 1) ~= 0 then
-					local hb = player.hitboxes[i]
-					print(string.format(
-						"    hb[%d]: pos=(%d,%d) id=%d w=%d h=%d",
-						i, hb.position.x, hb.position.y,
-						hb.boxID, hb.width, hb.height))
-				end
-				bs = bit.rshift(bs, 1)
-				if bs == 0 then break end
+		-- Dump active projectiles
+		local projCount = 0
+		for i = 0, self.projCount - 1 do
+			if team.projectiles[i] ~= 0 then
+				projCount = projCount + 1
 			end
+		end
+		if projCount > 0 then
+			print(string.format("  projectiles: %d active", projCount))
+			for i = 0, self.projCount - 1 do
+				if team.projectiles[i] ~= 0 then
+					dumpProjectile(string.format("proj[%d]", i),
+						team.projectiles[i])
+				end
+			end
+		else
+			print("  projectiles: none active")
 		end
 		::continue::
 	end
@@ -433,9 +509,6 @@ function KOF_XI_AW:debugDump()
 		self.width, self.height,
 		self.xScale, self.yScale,
 		self.xOffset, self.yOffset))
-	print(string.format("playersEnabled: P1=%s P2=%s",
-		tostring(self.playersEnabled[1]),
-		tostring(self.playersEnabled[2])))
 	print("============================================")
 end
 

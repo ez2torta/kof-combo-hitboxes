@@ -1,0 +1,43 @@
+========== KOF XI AW DEBUG DUMP ==========
+RAMbase=0x6D170000  RAMlimit=0x6E16FFFF
+Camera: X=258 Y=224  float=1.000
+--- Side 1 (teamPtr=0x27CB50) ---
+  point=0 leader=0 combo=0 super=0x0 skill=0x11B
+  slot[0] [POINT]: entry=0x8C190604  charID=0 hp=84 teamPos=0
+    slot[0]: entryOff=0x190604 dataPtr=0x8C197350 playerOff=0x196D3C
+      pos=(770,672) facing=0x00 hbActive=0x0C float=10.001
+      raw[+088h..+097h]: 00 00 00 00 00 00 00 00 00 00 00 40 00 00 00 40  (facing byte at [+08Ch] = [4])
+      hb[2]: pos=(16,94) id=0x01 w=10 h=10
+      hb[3]: pos=(0,46) id=0x02 w=20 h=46
+  slot[1]: entry=0x8C1906A0  charID=1 hp=112 teamPos=1
+    slot[1]: entryOff=0x1906A0 dataPtr=0x8C198154 playerOff=0x197B40
+      pos=(-62,501) facing=0x3E hbActive=0x00 float=8.600
+      raw[+088h..+097h]: 00 00 00 00 3E 00 00 00 00 00 00 40 00 00 00 40  (facing byte at [+08Ch] = [4])
+  slot[2]: entry=0x8C19073C  charID=2 hp=112 teamPos=2
+    slot[2]: entryOff=0x19073C dataPtr=0x8C198F58 playerOff=0x198944
+      pos=(-62,509) facing=0x3E hbActive=0x00 float=6.600
+      raw[+088h..+097h]: 00 00 00 00 3E 00 00 00 00 00 00 40 00 00 00 40  (facing byte at [+08Ch] = [4])
+  projectiles: 2 active
+    proj[0]: innerPtr=0x8C197B40  @innerOff: pos=(-62,501) hb=0x00  @innerOff-0x614: pos=(0,0) hb=0x00
+    proj[1]: innerPtr=0x8C198944  @innerOff: pos=(-62,509) hb=0x00  @innerOff-0x614: pos=(0,0) hb=0x00
+--- Side 2 (teamPtr=0x27CD48) ---
+  point=0 leader=0 combo=0 super=0x0 skill=0x0
+  slot[0] [POINT]: entry=0x8C190874  charID=9 hp=102 teamPos=0
+    slot[0]: entryOff=0x190874 dataPtr=0x8C199DA0 playerOff=0x19978C
+      pos=(385,672) facing=0x02 hbActive=0x0C float=10.600
+      raw[+088h..+097h]: 00 00 00 00 02 00 00 00 00 00 00 40 00 00 00 40  (facing byte at [+08Ch] = [4])
+      hb[2]: pos=(0,84) id=0x01 w=14 h=14
+      hb[3]: pos=(0,36) id=0x02 w=20 h=36
+  slot[1]: entry=0x8C190910  charID=10 hp=112 teamPos=2
+    slot[1]: entryOff=0x190910 dataPtr=0x8C19ABA4 playerOff=0x19A590
+      pos=(1218,496) facing=0x3C hbActive=0x00 float=6.000
+      raw[+088h..+097h]: 00 00 00 00 3C 00 00 00 00 00 00 40 00 00 00 40  (facing byte at [+08Ch] = [4])
+  slot[2]: entry=0x8C1909AC  charID=11 hp=112 teamPos=1
+    slot[2]: entryOff=0x1909AC dataPtr=0x8C19B9A8 playerOff=0x19B394
+      pos=(1218,446) facing=0x3C hbActive=0x00 float=8.000
+      raw[+088h..+097h]: 00 00 00 00 3C 00 00 00 00 00 00 40 00 00 00 40  (facing byte at [+08Ch] = [4])
+  projectiles: 2 active
+    proj[0]: innerPtr=0x8C19A590  @innerOff: pos=(1218,496) hb=0x00  @innerOff-0x614: pos=(0,0) hb=0x00
+    proj[1]: innerPtr=0x8C19B394  @innerOff: pos=(1218,446) hb=0x00  @innerOff-0x614: pos=(0,0) hb=0x00
+Window: 640x480  scale=(1.00,1.00)  offset=(0,0)
+============================================
