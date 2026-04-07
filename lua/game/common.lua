@@ -18,6 +18,7 @@ Game_Common.RAMbase = 0
 Game_Common.RAMlimit = 0xFFFFFFFF
 -- runtime base address of target game process
 Game_Common.processBase = 0
+Game_Common.requiresProcessBase = true
 -- "ideal" screen width/height (at or nearest to 1:1 scale in the game)
 Game_Common.basicWidth = 1
 Game_Common.basicHeight = 1
@@ -32,7 +33,7 @@ function Game_Common:new(source)
 	setmetatable(source, self)
 	self.__index = self
 	if source.parent == nil then source.parent = self end
-	if source.gameHandle then
+	if source.gameHandle and source.requiresProcessBase ~= false then
 		source.processBase = winprocess.getBaseAddress(source.gameHandle)
 		--print(string.format("Base address: 0x%08X", source.processBase))
 		source:relocate(source.processBase)

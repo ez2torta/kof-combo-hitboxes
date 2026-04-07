@@ -60,6 +60,38 @@ function Flycast_Common:findRAMBase(handle, gameSignatures)
 	return nil
 end
 
+-- Scan a 64-bit Flycast process using the external PowerShell helper.
+-- Required when the hitbox viewer is 32-bit (WoW64) and Flycast is 64-bit,
+-- because VirtualQueryEx from a 32-bit process cannot enumerate memory
+-- regions above 4 GB in the target's address space.
+function Flycast_Common:findRAMBase_External(pid, gameSignatures)
+	print("Flycast: Using 64-bit external scanner (this may take a moment)...")
+	for _, sig in ipairs(gameSignatures) do
+		local hex = {}
+		for i = 1, #sig.pattern do
+			hex[i] = string.format("%02X", string.byte(sig.pattern, i))
+		end
+		local cmd = string.format(
+			'%s\\WindowsPowerShell\\v1.0\\powershell.exe'
+			.. ' -NoProfile -ExecutionPolicy Bypass'
+			.. ' -File lua\\flycast_ramscan.ps1 %d %s %d',
+			"C:\\Windows\\Sysnative",
+			pid, table.concat(hex), sig.offset)
+		local ok, f = pcall(io.popen, cmd)
+		if ok and f then
+			local output = f:read("*a")
+			f:close()
+			local addr = tonumber(output:match("(-?%d+)"))
+			if addr and addr >= 0 then
+				print(string.format(
+					"Flycast: External scan found RAM at 0x%X", addr))
+				return addr
+			end
+		end
+	end
+	return nil
+end
+
 -- for cases where we want to export some values from this class into others
 -- without directly inheriting from this class
 function Flycast_Common:export(target)

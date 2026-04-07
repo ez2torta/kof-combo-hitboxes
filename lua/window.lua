@@ -144,8 +144,7 @@ window.defaultWindowClass = {
 window.createWindowExDefaults = {
 	dwExStyle = bit.bor(
 		window.WS_EX_TRANSPARENT,
-		window.WS_EX_LAYERED,
-		window.WS_EX_COMPOSITED),
+		window.WS_EX_LAYERED),
 	lpClassName = NULL,
 	lpWindowName = window.defaultWindowTitle,
 	dwStyle = window.WS_POPUP,

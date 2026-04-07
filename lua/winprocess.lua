@@ -53,6 +53,23 @@ DWORD GetModuleFileNameExW(
 local C = ffi.C
 local psapi = ffi.load("psapi")
 
+-- WoW64 support: allow a 32-bit process to read 64-bit process memory.
+-- NtWow64ReadVirtualMemory64 is exported by ntdll.dll on WoW64 systems
+-- and accepts explicit 64-bit addresses, bypassing the 4 GB limitation
+-- of the standard ReadProcessMemory API.
+ffi.cdef[[
+HANDLE GetCurrentProcess(void);
+BOOL IsWow64Process(HANDLE hProcess, BOOL *Wow64Process);
+DWORD GetProcessId(HANDLE Process);
+int32_t NtWow64ReadVirtualMemory64(
+	HANDLE ProcessHandle,
+	uint64_t BaseAddress,
+	void *Buffer,
+	uint64_t BufferSize,
+	uint64_t *NumberOfBytesRead);
+]]
+local ntdll = ffi.load("ntdll")
+
 -- bit masks for process access rights used by OpenProcess
 winprocess.PROCESS_TERMINATE       = 0x0001
 winprocess.PROCESS_CREATE_THREAD   = 0x0002
@@ -112,6 +129,32 @@ function winprocess.getBaseAddress(handle)
 	return hmodule[0].value, cb[0]
 end
 
+-- Returns true if this process is running under WoW64 (32-bit on 64-bit OS).
+function winprocess.isWow64()
+	local buf = ffi.new("BOOL[1]")
+	C.IsWow64Process(C.GetCurrentProcess(), buf)
+	return buf[0] ~= 0
+end
+
+function winprocess.getProcessId(handle)
+	return tonumber(C.GetProcessId(handle))
+end
+
+-- Read memory from a 64-bit process at a full 64-bit address.
+-- Uses NtWow64ReadVirtualMemory64 (only available under WoW64).
+-- "address" is a Lua number representing the absolute process address.
+function winprocess.read64(handle, address, buffer, n)
+	n = n or ffi.sizeof(buffer)
+	local bytesRead = ffi.new("uint64_t[1]")
+	local status = ntdll.NtWow64ReadVirtualMemory64(
+		handle, 0ULL + address, buffer, 0ULL + n, bytesRead)
+	if status < 0 then
+		error(string.format("Read64 failed at 0x%X (NTSTATUS 0x%08X)",
+			address, tonumber(ffi.cast("uint32_t", status))), 2)
+	end
+	return buffer
+end
+
 function winprocess.listLoadedModules(handle, moduleNamesOnly)
 	local modulesList = {}
 	local maxModules, maxModuleNameLength = 1000, 1024
@@ -169,6 +212,7 @@ function winprocess.scanMemory(handle, pattern, regionFilter)
 	local bytesReadBuf = ffi.new("SIZE_T[1]")
 	-- Maximum region size we'll scan: 64 MB (avoid scanning huge regions)
 	local MAX_SCAN_SIZE = 64 * 1024 * 1024
+	local CHUNK_SIZE = 1024 * 1024
 
 	while true do
 		local ret = C.VirtualQueryEx(handle,
@@ -192,28 +236,43 @@ function winprocess.scanMemory(handle, pattern, regionFilter)
 				shouldScan = regionFilter(mbi)
 			end
 			if shouldScan then
-				local buf = ffi.new("uint8_t[?]", regionSize)
-				local ok = C.ReadProcessMemory(handle,
-					ffi.cast("LPCVOID", ffi.cast("intptr_t", baseAddr)),
-					buf, regionSize, bytesReadBuf)
-				if ok ~= 0 then
+				local carryLen = math.max(0, patLen - 1)
+				local scanBuf = ffi.new("uint8_t[?]", CHUNK_SIZE + carryLen)
+				local chunkOffset = 0
+				local carried = 0
+				while chunkOffset < regionSize do
+					local bytesToRead = math.min(CHUNK_SIZE, regionSize - chunkOffset)
+					bytesReadBuf[0] = 0
+					local ok = C.ReadProcessMemory(handle,
+						ffi.cast("LPCVOID", ffi.cast("intptr_t", baseAddr + chunkOffset)),
+						scanBuf + carried, bytesToRead, bytesReadBuf)
 					local bytesRead = tonumber(bytesReadBuf[0])
-					for i = 0, bytesRead - patLen do
-						local match = true
-						for j = 0, patLen - 1 do
-							if buf[i + j] ~= patBytes[j] then
-								match = false
-								break
+					if ok ~= 0 or bytesRead > 0 then
+						local totalBytes = carried + bytesRead
+						for i = 0, totalBytes - patLen do
+							local match = true
+							for j = 0, patLen - 1 do
+								if scanBuf[i + j] ~= patBytes[j] then
+									match = false
+									break
+								end
+							end
+							if match then
+								results[#results + 1] = {
+									address = baseAddr + chunkOffset - carried + i,
+									regionBase = baseAddr,
+									regionSize = regionSize,
+								}
 							end
 						end
-						if match then
-							results[#results + 1] = {
-								address = baseAddr + i,
-								regionBase = baseAddr,
-								regionSize = regionSize,
-							}
+						carried = math.min(carryLen, totalBytes)
+						if carried > 0 then
+							ffi.copy(scanBuf, scanBuf + totalBytes - carried, carried)
 						end
+					else
+						carried = 0
 					end
+					chunkOffset = chunkOffset + bytesToRead
 				end
 			end
 		end

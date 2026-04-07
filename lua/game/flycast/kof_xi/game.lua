@@ -23,6 +23,7 @@ local KOF_XI_AW = KOF_Common:new({ whoami = "KOF_XI_AW" })
 -- ========================================================================
 
 KOF_XI_AW.configSection = "kof_xi"
+KOF_XI_AW.requiresProcessBase = false
 KOF_XI_AW.basicWidth = 640
 KOF_XI_AW.basicHeight = 480
 KOF_XI_AW.absoluteYOffset = 0  -- TODO: determine correct value
@@ -81,9 +82,21 @@ end
 function KOF_XI_AW:new(source)
 	local instance = KOF_Common.new(self, source)
 	if instance.gameHandle then
+		-- Detect if we're 32-bit (WoW64) talking to a 64-bit Flycast
+		instance.useWow64 = winprocess.isWow64()
+		if instance.useWow64 then
+			print("Flycast: WoW64 detected (32-bit viewer, 64-bit emulator).")
+		end
+
 		print("Flycast: Scanning for SH-4 main RAM...")
 		local ramBase = Flycast_Common.findRAMBase(
 			Flycast_Common, instance.gameHandle, self.gameSignatures)
+		-- If standard scan failed and we're WoW64, try the external scanner
+		if not ramBase and instance.useWow64 then
+			local pid = winprocess.getProcessId(instance.gameHandle)
+			ramBase = Flycast_Common:findRAMBase_External(
+				pid, self.gameSignatures)
+		end
 		if ramBase then
 			instance.RAMbase = ramBase
 			instance.RAMlimit = ramBase + Flycast_Common.SH4_RAM_SIZE - 1
@@ -103,18 +116,15 @@ function KOF_XI_AW:new(source)
 end
 
 -- Verify that the found RAM region actually contains KOF XI.
+-- Uses self:read() which routes through the WoW64 path if needed.
 function KOF_XI_AW:verifyGame()
 	local buf = ffi.new("uint8_t[32]")
-	local addressBuf = winutil.ptrBufType()
 	for _, sig in ipairs(self.verificationStrings) do
-		local addr = self.RAMbase + sig.offset
-		if addr >= self.RAMbase and addr + #sig.pattern <= self.RAMlimit then
-			addressBuf.i = addr
-			local ok, _ = pcall(winprocess.read,
-				self.gameHandle, addressBuf, buf, #sig.pattern)
+		if sig.offset >= 0
+			and sig.offset + 32 <= Flycast_Common.SH4_RAM_SIZE then
+			local ok = pcall(self.read, self, sig.offset, buf)
 			if ok then
-				local readStr = ffi.string(buf, #sig.pattern)
-				if readStr == sig.pattern then
+				if ffi.string(buf, #sig.pattern) == sig.pattern then
 					return true
 				end
 			end
@@ -133,6 +143,29 @@ function KOF_XI_AW:sh4ToRAMOffset(ptr)
 		return off
 	end
 	return nil
+end
+
+-- Override read()/readPtr() to use 64-bit memory access when running as
+-- a WoW64 (32-bit) process against a 64-bit Flycast.  The standard
+-- ReadProcessMemory path truncates addresses above 4 GB to 32 bits.
+function KOF_XI_AW:read(address, buffer)
+	if self.useWow64 then
+		local absAddr = address + self.RAMbase
+		winprocess.read64(self.gameHandle, absAddr, buffer)
+		return buffer, address
+	end
+	return KOF_Common.read(self, address, buffer)
+end
+
+function KOF_XI_AW:readPtr(address, buffer)
+	if self.useWow64 then
+		local absAddr = address + self.RAMbase
+		buffer = buffer or self.pointerBuf
+		winprocess.read64(self.gameHandle, absAddr, buffer,
+			ffi.sizeof(buffer))
+		return buffer.i, address
+	end
+	return KOF_Common.readPtr(self, address, buffer)
 end
 
 -- ========================================================================
@@ -230,6 +263,10 @@ function KOF_XI_AW:capturePlayerState(which)
 end
 
 function KOF_XI_AW:captureState()
+	if not self.RAMbase or self.RAMbase == 0 or not self.RAMlimit
+		or self.RAMlimit <= self.RAMbase then
+		return
+	end
 	self.boxset:reset()
 	self.pivots:reset()
 	self:captureWorldState()
@@ -260,6 +297,146 @@ function KOF_XI_AW:deriveBoxPosition(player, hitbox, facing)
 	centerY = playerY - centerY
 	local w, h = hitbox.width * 2, hitbox.height * 2
 	return centerX, centerY, w, h
+end
+
+-- ========================================================================
+-- DEBUG (press F8 to dump diagnostic info to the console)
+-- ========================================================================
+
+function KOF_XI_AW:checkInputs()
+	if hk.pressed(hk.VK_F8) then
+		self:debugDump()
+	end
+end
+
+function KOF_XI_AW:debugDump()
+	print("========== KOF XI AW DEBUG DUMP ==========")
+	-- 1. RAM state
+	print(string.format("RAMbase=0x%X  RAMlimit=0x%X",
+		self.RAMbase or 0, self.RAMlimit or 0))
+	if not self.RAMbase or self.RAMbase == 0 then
+		print("  ** RAM NOT FOUND — capture is disabled **")
+		print("============================================")
+		return
+	end
+
+	-- 2. Camera
+	local camOk, camErr = pcall(self.read, self, self.cameraPtr, self.camera)
+	if camOk then
+		local cam = self.camera
+		print(string.format("Camera: X=%d Y=%d  float=%.3f",
+			cam.position.x, cam.position.y, cam.restrictor))
+	else
+		print("Camera READ FAILED: " .. tostring(camErr))
+	end
+
+	-- 3. Per-player chain
+	for side = 1, 2 do
+		print(string.format("--- Player %d (teamPtr=0x%X) ---",
+			side, self.teamPtrs[side]))
+		local team = self.teams[side]
+		local teamOk, teamErr = pcall(self.read, self,
+			self.teamPtrs[side], team)
+		if not teamOk then
+			print("  team READ FAILED: " .. tostring(teamErr))
+			goto continue
+		end
+		local point = team.point
+		print(string.format("  team.point=%d  team.super=0x%X",
+			point, team.super))
+
+		-- Show all 3 entry pointers
+		for e = 0, 2 do
+			print(string.format("  entries[%d]=0x%08X", e, team.entries[e]))
+		end
+
+		local entryPtr = team.entries[point]
+		local entryOff = self:sh4ToRAMOffset(entryPtr)
+		if not entryOff then
+			print(string.format(
+				"  ** entryPtr 0x%08X -> sh4ToRAMOffset returned nil **",
+				entryPtr))
+			goto continue
+		end
+		print(string.format("  entryOff=0x%X (RAM offset)", entryOff))
+
+		local dataPtrOk, dataPtr = pcall(self.readPtr, self, entryOff + 0x10)
+		if not dataPtrOk then
+			print("  readPtr(entry+0x10) FAILED: " .. tostring(dataPtr))
+			goto continue
+		end
+		local dataOff = self:sh4ToRAMOffset(dataPtr)
+		if not dataOff then
+			print(string.format(
+				"  ** dataPtr 0x%08X -> sh4ToRAMOffset returned nil **",
+				dataPtr))
+			goto continue
+		end
+
+		local playerOff = dataOff - 0x614
+		print(string.format(
+			"  dataPtr=0x%08X  dataOff=0x%X  playerOff=0x%X",
+			dataPtr, dataOff, playerOff))
+
+		if playerOff < 0 or playerOff >= Flycast_Common.SH4_RAM_SIZE then
+			print("  ** playerOff out of range **")
+			goto continue
+		end
+
+		local player = self.players[side]
+		local pOk, pErr = pcall(self.read, self, playerOff, player)
+		if not pOk then
+			print("  player READ FAILED: " .. tostring(pErr))
+			goto continue
+		end
+
+		local px, py = player.position.x, player.position.y
+		local facing = player.facing
+		local hbAct = player.hitboxesActive
+		local scaleF = player.unknown01
+		print(string.format(
+			"  pos=(%d,%d)  facing=0x%02X  hitboxesActive=0x%02X  float=%.3f",
+			px, py, facing, hbAct, scaleF))
+
+		-- Show playerExtra for this side
+		for e = 0, 2 do
+			local pe = team.p[e]
+			print(string.format(
+				"  extra[%d]: charID=%d  health=%d  teamPos=%d",
+				e, pe.charID, pe.health, pe.teamPosition))
+		end
+
+		-- World-to-screen
+		local sx, sy = self:worldToScreen(px, py)
+		print(string.format("  screen=(%d,%d)", sx, sy))
+
+		-- Hitbox details
+		if hbAct ~= 0 then
+			local bs = hbAct
+			for i = 0, 6 do
+				if bit.band(bs, 1) ~= 0 then
+					local hb = player.hitboxes[i]
+					print(string.format(
+						"    hb[%d]: pos=(%d,%d) id=%d w=%d h=%d",
+						i, hb.position.x, hb.position.y,
+						hb.boxID, hb.width, hb.height))
+				end
+				bs = bit.rshift(bs, 1)
+				if bs == 0 then break end
+			end
+		end
+		::continue::
+	end
+
+	-- 4. Overlay / rendering info
+	print(string.format("Window: %dx%d  scale=(%.2f,%.2f)  offset=(%d,%d)",
+		self.width, self.height,
+		self.xScale, self.yScale,
+		self.xOffset, self.yOffset))
+	print(string.format("playersEnabled: P1=%s P2=%s",
+		tostring(self.playersEnabled[1]),
+		tostring(self.playersEnabled[2])))
+	print("============================================")
 end
 
 return KOF_XI_AW
