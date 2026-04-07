@@ -150,6 +150,16 @@ local PS2Game = GameTemplate:new({
 	rawTitle = true,
 	targetProcessName = { "pcsx2.exe", "pcsx2-rr.exe" },
 })
+local FlycastGame = GameTemplate:new({
+	platformType = "Atomiswave",
+	detectMethod = checkWindowTitleAndProcessName,
+	postprocess = noPostprocess,
+	rawTitle = false, -- uses Lua pattern matching
+	-- Flycast window titles: "Flycast", "Flycast Dojo", etc.
+	-- The game name is NOT included in the window title, so we detect
+	-- the emulator first and identify the game later via RAM scanning.
+	targetProcessName = { "flycast.exe" },
+})
 
 -- games are detected and prioritized in the order listed here;
 -- if two games are running, the game that appears first in this list wins
@@ -178,6 +188,14 @@ local detectedGames = {
 		prettyName = "Guilty Gear XX #Reload",
 		targetWindowTitle = "GUILTYGEAR X2 #RELOAD",
 		targetProcessName = "ggx2.exe",
+	}),
+	-- Flycast (Atomiswave) games go before PS2 entries
+	FlycastGame:new({
+		module = "flycast.kof_xi",
+		prettyName = "King of Fighters XI (Atomiswave)",
+		-- Match "Flycast" anywhere in the window title (handles
+		-- "Flycast", "Flycast Dojo", future title variations, etc.)
+		targetWindowTitle = "Flycast",
 	}),
 	PS2Game:new({
 		module = "pcsx2.kof_xi",

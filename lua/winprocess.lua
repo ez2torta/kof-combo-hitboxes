@@ -11,6 +11,24 @@ BOOL CloseHandle(HANDLE hObject);
 BOOL ReadProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress, LPVOID lpBuffer, SIZE_T nSize, SIZE_T *lpNumberOfBytesRead);
 BOOL WriteProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress, LPVOID lpBuffer, SIZE_T nSize, SIZE_T *lpNumberOfBytesRead);
 
+typedef struct {
+	intptr_t BaseAddress;
+	intptr_t AllocationBase;
+	DWORD AllocationProtect;
+	uint16_t PartitionId;
+	intptr_t RegionSize;
+	DWORD State;
+	DWORD Protect;
+	DWORD Type;
+} MEMORY_BASIC_INFORMATION;
+
+SIZE_T VirtualQueryEx(
+	HANDLE hProcess,
+	LPCVOID lpAddress,
+	MEMORY_BASIC_INFORMATION *lpBuffer,
+	SIZE_T dwLength
+);
+
 // functions from psapi.dll
 typedef union {
 	HMODULE hmod;
@@ -128,6 +146,84 @@ function winprocess.listLoadedModules(handle, moduleNamesOnly)
 		end
 	end
 	return modulesList
+end
+
+-- Memory scanning constants
+local MEM_COMMIT = 0x1000
+local PAGE_NOACCESS = 0x01
+local PAGE_GUARD = 0x100
+local MBI_SIZE = ffi.sizeof("MEMORY_BASIC_INFORMATION")
+
+-- Scan process memory for a byte pattern.
+-- Returns a list of {address, regionBase, regionSize} tables for each match.
+-- "pattern" must be a Lua string (the raw bytes to search for).
+-- Optional "regionFilter" is a function(mbi) -> bool to filter which regions
+-- to scan (e.g., only MEM_MAPPED regions of a specific size).
+function winprocess.scanMemory(handle, pattern, regionFilter)
+	local mbi = ffi.new("MEMORY_BASIC_INFORMATION")
+	local patLen = #pattern
+	local patBytes = ffi.new("uint8_t[?]", patLen)
+	ffi.copy(patBytes, pattern, patLen)
+	local results = {}
+	local addr = ffi.cast("intptr_t", 0)
+	local bytesReadBuf = ffi.new("SIZE_T[1]")
+	-- Maximum region size we'll scan: 64 MB (avoid scanning huge regions)
+	local MAX_SCAN_SIZE = 64 * 1024 * 1024
+
+	while true do
+		local ret = C.VirtualQueryEx(handle,
+			ffi.cast("LPCVOID", addr), mbi, MBI_SIZE)
+		if ret == 0 then break end
+
+		local regionSize = tonumber(mbi.RegionSize)
+		local baseAddr = tonumber(mbi.BaseAddress)
+		local state = mbi.State
+		local protect = mbi.Protect
+
+		-- Only scan committed, readable regions
+		if state == MEM_COMMIT
+			and bit.band(protect, PAGE_NOACCESS) == 0
+			and bit.band(protect, PAGE_GUARD) == 0
+			and regionSize > 0
+			and regionSize <= MAX_SCAN_SIZE
+		then
+			local shouldScan = true
+			if regionFilter then
+				shouldScan = regionFilter(mbi)
+			end
+			if shouldScan then
+				local buf = ffi.new("uint8_t[?]", regionSize)
+				local ok = C.ReadProcessMemory(handle,
+					ffi.cast("LPCVOID", ffi.cast("intptr_t", baseAddr)),
+					buf, regionSize, bytesReadBuf)
+				if ok ~= 0 then
+					local bytesRead = tonumber(bytesReadBuf[0])
+					for i = 0, bytesRead - patLen do
+						local match = true
+						for j = 0, patLen - 1 do
+							if buf[i + j] ~= patBytes[j] then
+								match = false
+								break
+							end
+						end
+						if match then
+							results[#results + 1] = {
+								address = baseAddr + i,
+								regionBase = baseAddr,
+								regionSize = regionSize,
+							}
+						end
+					end
+				end
+			end
+		end
+
+		local nextAddr = baseAddr + regionSize
+		if nextAddr <= tonumber(addr) then break end
+		addr = ffi.cast("intptr_t", nextAddr)
+	end
+
+	return results
 end
 
 return winprocess
