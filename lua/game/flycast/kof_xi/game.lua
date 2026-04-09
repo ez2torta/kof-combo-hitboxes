@@ -11,6 +11,7 @@ local BoxSet = require("game.boxset")
 local BoxList = require("game.boxlist")
 local Flycast_Common = require("game.flycast.common")
 local KOF_Common = require("game.kof_common")
+local FrameCapture = require("game.flycast.kof_xi.frame_capture")
 local KOF_XI_AW = KOF_Common:new({ whoami = "KOF_XI_AW" })
 
 -- ========================================================================
@@ -76,6 +77,8 @@ function KOF_XI_AW:extraInit(noExport)
 		"pivots", (self.projCount + 1) * 2, self.pivotSlotConstructor)
 	-- Used to dereference SH-4 pointers from team entry list
 	self.entryBuf = ffi.new("uint8_t[32]")
+	-- Frame-by-frame capture logger (toggle with F9)
+	self.frameCapture = FrameCapture:new()
 end
 
 -- Override the base class constructor to handle RAM discovery.
@@ -322,6 +325,11 @@ function KOF_XI_AW:checkInputs()
 	if hk.pressed(hk.VK_F8) then
 		self:debugDump()
 	end
+	if hk.pressed(hk.VK_F9) then
+		self.frameCapture:toggle()
+	end
+	-- Capture frame data every tick while recording
+	self.frameCapture:logFrame(self)
 end
 
 function KOF_XI_AW:debugDump()
